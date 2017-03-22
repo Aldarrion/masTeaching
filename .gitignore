@@ -1,0 +1,10 @@
+/bin/
+.classpath
+.gitignore
+.gradle/
+.project
+.settings/
+APDescription.txt
+MTPs-Main-Container.txt
+build/
+
