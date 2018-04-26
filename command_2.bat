@@ -1,0 +1,1 @@
+java -cp "lib\jade.jar;out\production\masTeaching" jade.Boot -gui -agents "b1:mas.cv4.BookTrader;b2:mas.cv4.BookTrader;e:mas.cv4.Environment"

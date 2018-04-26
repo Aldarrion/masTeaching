@@ -80,16 +80,18 @@ public class BookTrader extends Agent {
         }
     }
 
-    private final double TIME_THOLD = 3 * 60 * 1000;
-    private final double START_LOWER_TIME = 60 * 1000;
+    private final double TIME_THOLD = 1 * 60 * 1000;
+    private final double START_LOWER_TIME = 0;//60 * 1000;
 
     private double startTime;
 
     private HashMap<String, Integer> bookCounts = new HashMap<>();
 
-    private static double lerp(double a, double b, double t)
+    private static double lerp(double min, double max, double t)
     {
-        return a + (b - a)  * t;
+        double value = min + (max - min)  * t;
+        //System.out.println("Lerp: " + value);
+        return Math.max(value, 0);
     }
 
     private boolean isMyGoal(String bookName)
@@ -103,11 +105,11 @@ public class BookTrader extends Agent {
         return false;
     }
 
-    private boolean hasBook(int id)
+    private boolean hasBook(String id)
     {
         for (BookInfo book : myBooks)
         {
-            if (book.getBookID() == id)
+            if (book.getBookName().equals(id))
                 return true;
         }
         return false;
@@ -120,6 +122,47 @@ public class BookTrader extends Agent {
         }
 
         return null;
+    }
+
+    /**
+     * How much do we want to get for this book.
+     */
+    private double getBookSellPrice(String bookName) {
+        double elapsed = System.currentTimeMillis() - startTime;
+
+        double maxPrice = Constants.getPrice(bookName) + 19;
+        double minPrice = Math.max(1, Constants.getPrice(bookName) / 2);
+
+        if (elapsed < START_LOWER_TIME) {
+            return maxPrice;
+        } else if (elapsed >= TIME_THOLD) {
+            return minPrice;
+        } else {
+            return lerp(minPrice, maxPrice, 1 - ((elapsed - START_LOWER_TIME) / (TIME_THOLD - START_LOWER_TIME)));
+        }
+    }
+
+    /**
+     * How much are we willing to pay for this book.
+     */
+    private double getBookBuyPrice(String bookName) {
+        double elapsed = System.currentTimeMillis() - startTime;
+
+        Goal goal = getGoalByBook(bookName);
+
+        if (goal == null || hasBook(goal.getBook().getBookName()))
+            return 0;
+
+        double maxPrice = goal.getValue() - 1;
+        double minPrice = Math.max(1, goal.getValue() - 40);
+
+        if (elapsed < START_LOWER_TIME) {
+            return minPrice;
+        } else if (elapsed >= TIME_THOLD) {
+            return maxPrice;
+        } else {
+            return lerp(minPrice, maxPrice, (elapsed - START_LOWER_TIME) / (TIME_THOLD - START_LOWER_TIME));
+        }
     }
 
     // waits for the StartTrading message and adds the trading behavior
@@ -219,7 +262,7 @@ public class BookTrader extends Agent {
                 try {
 
                     for (Goal goal : myGoal) {
-                        if (hasBook(goal.getBook().getBookID()))
+                        if (hasBook(goal.getBook().getBookName()))
                             continue;
 
                         //find other seller and prepare a CFP
@@ -241,7 +284,7 @@ public class BookTrader extends Agent {
                             buyBook.addReceiver(dfad.getName());
                         }
 
-                        ArrayList<BookInfo> bis = new ArrayList<BookInfo>();
+                        ArrayList<BookInfo> bis = new ArrayList<>();
 
                         // Try to buy all books from my goal I don't have yet
                         BookInfo bi = new BookInfo();
@@ -336,9 +379,10 @@ public class BookTrader extends Agent {
                     for (BookInfo book : offer.getBooks()) {
                         Goal goal = getGoalByBook(book.getBookName());
                         if (goal != null) {
-                            price += goal.getValue();
+                            price += goal.getValue() + 500;
                         } else {
-                            price += Constants.getPrice(book.getBookName()); // TODO handle dynamically
+                            //price += Constants.getPrice(book.getBookName());
+                            price += getBookSellPrice(book.getBookName());
                         }
                     }
                 }
@@ -347,11 +391,11 @@ public class BookTrader extends Agent {
             }
 
             private Offer chooseBestOffer(ArrayList<Offer> offers) {
-                double bestPrice = -Double.MAX_VALUE;
+                double bestPrice = Double.MAX_VALUE;
                 Offer bestOffer = null;
                 for (Offer offer : offers) {
                     double price = computeOfferPrice(offer);
-                    if (bestOffer == null || price > bestPrice) {
+                    if (bestOffer == null || price < bestPrice) {
                         bestOffer = offer;
                         bestPrice = price;
                     }
@@ -390,15 +434,17 @@ public class BookTrader extends Agent {
                                 continue;
 
                             boolean foundAll = true;
-                            if (o.getBooks() != null)
+                            if (o.getBooks() != null) {
                                 for (BookInfo bi : o.getBooks()) {
                                     String bn = bi.getBookName();
                                     boolean found = false;
-                                    for (BookInfo myBook : myBooks) {
-                                        if (myBook.getBookName().equals(bn)) {
-                                            found = true;
-                                            bi.setBookID(myBook.getBookID());
-                                            break;
+                                    if (!isMyGoal(bn)) {
+                                        for (BookInfo myBook : myBooks) {
+                                            if (myBook.getBookName().equals(bn)) {
+                                                found = true;
+                                                bi.setBookID(myBook.getBookID());
+                                                break;
+                                            }
                                         }
                                     }
                                     if (!found) {
@@ -406,19 +452,35 @@ public class BookTrader extends Agent {
                                         break;
                                     }
                                 }
-
+                            }
                             if (foundAll) {
                                 canFulfill.add(o);
                             }
                         }
 
+                        Offer bestOffer = chooseBestOffer(offers);
+
+                        double givenValue = computeOfferPrice(bestOffer);
+                        double recievedValue = Double.MAX_VALUE;
+                        if (cf.getWillSell() != null) {
+                            recievedValue = 0.0;
+                            for (BookInfo bi : cf.getWillSell()) {
+                                recievedValue += getBookBuyPrice(bi.getBookName());
+                            }
+                        }
+
                         //if none, we REJECT the proposal, we also reject all proposal if we already accepted one
-                        if (canFulfill.size() == 0 || accepted) {
+                        if (canFulfill.size() == 0
+                                || accepted
+                                || bestOffer == null
+                                || givenValue > recievedValue) {
                             ACLMessage acc = response.createReply();
                             acc.setPerformative(ACLMessage.REJECT_PROPOSAL);
                             acceptances.add(acc);
                             continue;
                         }
+
+                        //System.out.println("Given: " + givenValue + " money: " + bestOffer.getMoney() + " goal value: " + getGoalByBook(cf.getWillSell().get(0).getBookName()).getValue());
 
                         ACLMessage acc = response.createReply();
                         acc.setPerformative(ACLMessage.ACCEPT_PROPOSAL);
@@ -426,9 +488,9 @@ public class BookTrader extends Agent {
 
                         //choose an offer
                         Chosen ch = new Chosen();
-                        ch.setOffer(chooseBestOffer(offers));
+                        ch.setOffer(bestOffer);
 
-                        c=ch;
+                        c = ch;
                         shouldReceive = cf.getWillSell();
 
                         getContentManager().fillContent(acc, ch);
@@ -465,28 +527,14 @@ public class BookTrader extends Agent {
                 super(a, cfp);
             }
 
-            private double getBookPrice(String bookName) {
-                double elapsed = System.currentTimeMillis() - startTime;
-
-                double maxPrice = Constants.getPrice(bookName) + 19;
-                double minPrice = Constants.getPrice(bookName) - 21;
-
-                if (elapsed < START_LOWER_TIME) {
-                    return maxPrice;
-                } else if (elapsed >= TIME_THOLD) {
-                    return minPrice;
-                } else {
-                    return lerp(minPrice, maxPrice, 1 - (START_LOWER_TIME + elapsed / TIME_THOLD));
-                }
-            }
-
             private ArrayList<Offer> makeOtherOffers(double price) {
                 ArrayList<Offer> offers = new ArrayList<>();
                 for (Goal goal : myGoal) {
-                    if (hasBook(goal.getBook().getBookID())) {
+                    if (hasBook(goal.getBook().getBookName())) {
                         continue;
                     }
-                    double offerMoney = price - goal.getValue() - 10; // TODO get goal value dynamically based on time
+                    //double offerMoney = price - goal.getValue() - 10;
+                    double offerMoney = price - getBookBuyPrice(goal.getBook().getBookName());
 
                     ArrayList<BookInfo> bis = new ArrayList<>();
                     bis.add(goal.getBook());
@@ -508,17 +556,18 @@ public class BookTrader extends Agent {
                     SellMeBooks smb = (SellMeBooks)ac.getAction();
                     ArrayList<BookInfo> books = smb.getBooks();
 
-                    ArrayList<BookInfo> sellBooks = new ArrayList<BookInfo>();
+                    ArrayList<BookInfo> sellBooks = new ArrayList<>();
 
                     //find out, if we have books the agent wants
-                    for (int i = 0; i < books.size(); i++) {
+                    for (BookInfo wantedBook : books) {
                         boolean found = false;
-                        for (int j = 0; j < myBooks.size(); j++) {
-                            if (myBooks.get(j).getBookName().equals(books.get(i).getBookName())
-                                    && !isMyGoal(books.get(i).getBookName())) {
-                                sellBooks.add(myBooks.get(j));
-                                found = true;
-                                break;
+                        if (!isMyGoal(wantedBook.getBookName())) {
+                            for (BookInfo myBook : myBooks) {
+                                if (myBook.getBookName().equals(wantedBook.getBookName())) {
+                                    sellBooks.add(myBook);
+                                    found = true;
+                                    break;
+                                }
                             }
                         }
                         if (!found)
@@ -529,7 +578,7 @@ public class BookTrader extends Agent {
                     Offer o1 = new Offer();
                     double price = 0.0;
                     for (BookInfo book : sellBooks) {
-                        price += getBookPrice(book.getBookName());
+                        price += getBookSellPrice(book.getBookName());
                     }
                     o1.setMoney(price);
 
